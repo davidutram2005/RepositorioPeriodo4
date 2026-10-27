@@ -330,3 +330,195 @@ SELECT
 FROM adm.ordem_servico os
 LEFT JOIN adm.funcionario f ON os.id_funcionario = f.id_funcionario
 LEFT JOIN adm.item_ordem_servico ios ON os.id_os = ios.id_os;
+
+
+
+
+
+
+-=-=-==-==-=-=-===-==-=-=-=-===-=-==-====-=-=
+-ENTREGA 5 - PASSO A PASSO DA CRIAÇÃO DO TRIGGER
+
+
+-- PASSO 1: Ajustar a tabela de lançamentos e o plano de contas
+
+-- Garante a criação da tabela de lançamentos
+CREATE TABLE IF NOT EXISTS contabil.lancamentos (
+    id SERIAL PRIMARY KEY,
+    data_lancamento DATE NOT NULL,
+    historico VARCHAR(150) NOT NULL,
+    conta_debito_id INT REFERENCES contabil.plano_contas(id_conta) ON DELETE RESTRICT,
+    conta_credito_id INT REFERENCES contabil.plano_contas(id_conta) ON DELETE RESTRICT
+);
+
+-- Adiciona a coluna 'valor' com restrição para aceitar apenas valores maiores que zero[cite: 2]
+ALTER TABLE contabil.lancamentos 
+ADD COLUMN IF NOT EXISTS valor NUMERIC(14,2) CHECK (valor > 0);
+
+-- Adiciona e atualiza a natureza das contas no plano de contas[cite: 1, 2]
+ALTER TABLE contabil.plano_contas 
+ADD COLUMN IF NOT EXISTS natureza_conta VARCHAR(20) CHECK (natureza_conta IN ('DEVEDORA', 'CREDORA'));
+
+UPDATE contabil.plano_contas SET natureza_conta = 'DEVEDORA' WHERE codigo_conta LIKE '1.%' OR codigo_conta LIKE '5.%';
+UPDATE contabil.plano_contas SET natureza_conta = 'CREDORA' WHERE codigo_conta LIKE '2.%' OR codigo_conta LIKE '3.%' OR codigo_conta LIKE '4.%';
+
+-- Inserção das contas de teste (caso ainda não estejam cadastradas)
+INSERT INTO contabil.plano_contas (codigo_conta, descricao, tipo_conta, natureza_conta) VALUES
+('1.1.01', 'Caixa', 'ATIVO', 'DEVEDORA'),
+('1.1.02', 'Bancos Conta Movimento', 'ATIVO', 'DEVEDORA'),
+('1.1.04', 'Estoque de Mercadorias', 'ATIVO', 'DEVEDORA'),
+('2.1.01', 'Fornecedores a Pagar', 'PASSIVO', 'CREDORA'),
+('3.1.01', 'Capital Social', 'PASSIVO', 'CREDORA'),
+('4.1.01', 'Receita de Vendas', 'RECEITA', 'CREDORA'),
+('5.1.01', 'Custo das Mercadorias Vendidas', 'DESPESA', 'DEVEDORA'),
+('5.1.03', 'Despesas com Aluguel', 'DESPESA', 'DEVEDORA')
+ON CONFLICT (codigo_conta) DO UPDATE 
+SET natureza_conta = EXCLUDED.natureza_conta;
+
+
+
+-- PASSO 2: Criar a tabela 'saldo_contas'[cite: 2]
+
+CREATE TABLE IF NOT EXISTS contabil.saldo_contas (
+    conta_id INT PRIMARY KEY REFERENCES contabil.plano_contas(id_conta) ON DELETE CASCADE,
+    saldo NUMERIC(14,2) NOT NULL DEFAULT 0.00,
+    data_atualizacao TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+
+-- PASSO 3: Carga inicial da tabela 'saldo_contas' (saldo zero)[cite: 2]
+
+TRUNCATE TABLE contabil.saldo_contas CASCADE;
+
+INSERT INTO contabil.saldo_contas (conta_id, saldo, data_atualizacao)
+SELECT id_conta, 0.00, CURRENT_TIMESTAMP
+FROM contabil.plano_contas
+ON CONFLICT (conta_id) DO NOTHING;
+
+
+-- PASSO 4: Criar a função do Trigger em PL/pgSQL[cite: 2]
+
+CREATE OR REPLACE FUNCTION contabil.fn_atualiza_saldo()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_natureza_debito VARCHAR(20);
+    v_natureza_credito VARCHAR(20);
+BEGIN
+    -- Se o valor for nulo ou inválido, retorna sem alterar
+    IF NEW.valor IS NULL OR NEW.valor <= 0 THEN
+        RETURN NEW;
+    END IF;
+
+    -- Processa a conta de débito
+    IF NEW.conta_debito_id IS NOT NULL THEN
+        SELECT natureza_conta INTO v_natureza_debito
+        FROM contabil.plano_contas
+        WHERE id_conta = NEW.conta_debito_id;
+
+        IF v_natureza_debito = 'DEVEDORA' THEN
+            UPDATE contabil.saldo_contas
+            SET saldo = saldo + NEW.valor,
+                data_atualizacao = CURRENT_TIMESTAMP
+            WHERE conta_id = NEW.conta_debito_id;
+        ELSIF v_natureza_debito = 'CREDORA' THEN
+            UPDATE contabil.saldo_contas
+            SET saldo = saldo - NEW.valor,
+                data_atualizacao = CURRENT_TIMESTAMP
+            WHERE conta_id = NEW.conta_debito_id;
+        END IF;
+    END IF;
+
+    -- Processa a conta de crédito
+    IF NEW.conta_credito_id IS NOT NULL THEN
+        SELECT natureza_conta INTO v_natureza_credito
+        FROM contabil.plano_contas
+        WHERE id_conta = NEW.conta_credito_id;
+
+        IF v_natureza_credito = 'DEVEDORA' THEN
+            UPDATE contabil.saldo_contas
+            SET saldo = saldo - NEW.valor,
+                data_atualizacao = CURRENT_TIMESTAMP
+            WHERE conta_id = NEW.conta_credito_id;
+        ELSIF v_natureza_credito = 'CREDORA' THEN
+            UPDATE contabil.saldo_contas
+            SET saldo = saldo + NEW.valor,
+                data_atualizacao = CURRENT_TIMESTAMP
+            WHERE conta_id = NEW.conta_credito_id;
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- PASSO 5: Criar o Trigger[cite: 2]
+
+DROP TRIGGER IF EXISTS trg_atualiza_saldo ON contabil.lancamentos;
+
+CREATE TRIGGER trg_atualiza_saldo
+AFTER INSERT ON contabil.lancamentos
+FOR EACH ROW
+EXECUTE FUNCTION contabil.fn_atualiza_saldo();
+
+
+-- PASSO 6: Inserção dos lançamentos de teste[cite: 2, 3]
+
+DELETE FROM contabil.lancamentos;
+
+INSERT INTO contabil.lancamentos (data_lancamento, historico, conta_debito_id, conta_credito_id, valor) VALUES
+('2026-04-01', 'Aporte de capital dos sócios', 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Bancos%Movimento%'), 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Capital Social%'), 
+ 30000.00),
+
+('2026-04-02', 'Compra de mercadorias à vista', 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Estoque de Mercadorias%'), 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Bancos%Movimento%'), 
+ 8000.00),
+
+('2026-04-03', 'Venda de mercadorias à vista', 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Caixa%'), 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Receita de Vendas%'), 
+ 5000.00),
+
+('2026-04-03', 'Baixa do custo da mercadoria vendida', 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Custo das Mercadorias Vendidas%'), 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Estoque de Mercadorias%'), 
+ 3000.00),
+
+('2026-04-05', 'Pagamento de aluguel do mês', 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Despesas com Aluguel%'), 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Bancos%Movimento%'), 
+ 1500.00),
+
+('2026-04-06', 'Compra de mercadorias a prazo', 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Estoque de Mercadorias%'), 
+ (SELECT id_conta FROM contabil.plano_contas WHERE descricao ILIKE '%Fornecedores a Pagar%'), 
+ 4000.00);
+
+
+-- PASSO 7: Consulta de conferência dos saldos (JOIN)[cite: 3]
+
+SELECT 
+    pc.codigo_conta AS codigo,
+    pc.descricao AS conta,
+    pc.natureza_conta AS natureza,
+    sc.saldo AS "Saldo (R$)"
+FROM contabil.plano_contas pc
+INNER JOIN contabil.saldo_contas sc ON pc.id_conta = sc.conta_id
+ORDER BY pc.codigo_conta;
+
+
+-- PASSO 8: Soma dos saldos agrupada por natureza da conta[cite: 3]
+/*
+Explicação: Os dois totais devem ser iguais (R$ 39.000,00) devido ao Princípio das Partidas Dobradas 
+da Contabilidade, onde cada lançamento possui origens e aplicações de valores equivalentes.
+*/
+
+SELECT 
+    pc.natureza_conta AS natureza,
+    SUM(sc.saldo) AS "Total (R$)"
+FROM contabil.plano_contas pc
+INNER JOIN contabil.saldo_contas sc ON pc.id_conta = sc.conta_id
+GROUP BY pc.natureza_conta;
