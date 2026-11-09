@@ -29,7 +29,7 @@ CREATE TABLE site.peca (
     nome_peca VARCHAR(150) NOT NULL,
     fabricante VARCHAR(100),
     codigo_fabricante VARCHAR(50),
-    preco_venda NUMERIC(10,2) NOT NULL,
+    preco_venda NUMERIC(10,2) NOT NULL CHECK (preco_venda > 0),
     qnt_estoque INT DEFAULT 0
 );
 

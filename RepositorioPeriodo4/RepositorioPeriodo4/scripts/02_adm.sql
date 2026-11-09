@@ -22,7 +22,8 @@ CREATE TABLE adm.ordem_servico (
     cliente_nome VARCHAR(100) NOT NULL,
     cliente_telefone VARCHAR(20),
     veiculo_descricao VARCHAR(100) NOT NULL,
-    status VARCHAR(30) DEFAULT 'Em Aberto' NOT NULL,
+    status VARCHAR(30) DEFAULT 'Em Aberto' NOT NULL
+        CHECK (status IN ('Em Aberto', 'Em Andamento', 'Concluída', 'Cancelada')),
     data_abertura TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     valor_total NUMERIC(10,2) DEFAULT 0.00
 );
@@ -40,6 +41,6 @@ CREATE TABLE adm.movimentacao_estoque (
     id_peca INT REFERENCES site.peca(id_peca) ON DELETE RESTRICT,
     id_fornecedor INT REFERENCES adm.fornecedor(id_fornecedor) ON DELETE SET NULL,
     tipo_movimentacao VARCHAR(20) NOT NULL CHECK (tipo_movimentacao IN ('ENTRADA', 'SAIDA', 'AJUSTE')),
-    quantidade INT NOT NULL,
+    quantidade INT NOT NULL CHECK (quantidade > 0),
     data_movimentacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

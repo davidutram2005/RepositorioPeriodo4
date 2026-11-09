@@ -1,9 +1,15 @@
 CREATE SCHEMA IF NOT EXISTS contabil;
+-- Tipos ENUM do modelo da Prática 01: o tipo da conta inclui PATRIMONIO_LIQUIDO,
+-- e a natureza só aceita DEVEDORA ou CREDORA.
+CREATE TYPE contabil.tipo_conta_enum AS ENUM ('ATIVO', 'PASSIVO', 'PATRIMONIO_LIQUIDO', 'RECEITA', 'DESPESA');
+CREATE TYPE contabil.natureza_conta_enum AS ENUM ('DEVEDORA', 'CREDORA');
+
 CREATE TABLE contabil.plano_contas (
     id_conta SERIAL PRIMARY KEY,
     codigo_conta VARCHAR(20) NOT NULL UNIQUE,
     descricao VARCHAR(100) NOT NULL,
-    tipo_conta VARCHAR(20) NOT NULL CHECK (tipo_conta IN ('RECEITA', 'DESPESA', 'ATIVO', 'PASSIVO'))
+    tipo_conta contabil.tipo_conta_enum NOT NULL,
+    natureza_conta contabil.natureza_conta_enum NOT NULL DEFAULT 'DEVEDORA'
 );
 
 CREATE TABLE contabil.nota_fiscal (
